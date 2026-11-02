@@ -153,6 +153,14 @@ export default function App() {
     addLine({ id: makeId(), name: 'Party bot', text: 'Time is up! The round is over.', kind: 'system' })
   }, [timeLeft, game, playerId, send, addLine])
 
+  useEffect(() => {
+    if (!game || game.status !== 'drawing' || timeLeft > 0 || game.drawerId !== playerId) return
+    const ended: GameState = { ...game, status: 'ended' }
+    setGame(ended)
+    send({ type: 'round', state: ended })
+    addLine({ id: makeId(), name: 'Party bot', text: 'Time is up! The round is over.', kind: 'system' })
+  }, [timeLeft, game, playerId, send, addLine])
+
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [chat])
 
   const drawStroke = useCallback((ctx: CanvasRenderingContext2D, stroke: Stroke) => {
