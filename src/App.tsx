@@ -2,13 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent, PointerEvent as ReactPointerEvent } from 'react'
 import { createClient, type RealtimeChannel } from '@supabase/supabase-js'
 import {
-  ArrowLeft, Check, ChevronRight, CircleHelp, Copy, Crown, Eraser,
-  Lightbulb, Link2, MessageCircle, Pencil, Play, Send, Settings2,
+  Check, ChevronRight, CircleHelp, Copy, Crown, Eraser,
+  Lightbulb, Link2, MessageCircle, Pencil, Play, Send,
   Sparkles, Timer, Trophy, Users, Wifi, WifiOff, X
 } from 'lucide-react'
 
 type Player = { id: string; name: string; score: number; isHost?: boolean }
-type ChatLine = { id: string; name: string; text: string; kind: 'guess' | 'system' | 'correct' }
+type ChatLine = { id: string; name: string; text: string; kind: 'guess' | 'system' | 'correct'; playerId?: string }
 type Point = { x: number; y: number }
 type Stroke = { points: Point[]; color: string; size: number }
 type GameState = {
@@ -68,6 +68,12 @@ export default function App() {
   const drawingRef = useRef(false)
   const currentStroke = useRef<Point[]>([])
   const chatEndRef = useRef<HTMLDivElement>(null)
+  const gameRef = useRef<GameState | null>(null)
+  const secretRef = useRef('')
+  const playersRef = useRef<Player[]>([])
+  gameRef.current = game
+  secretRef.current = secretWord
+  playersRef.current = players
   const isHost = players[0]?.id === playerId
 
   const addLine = useCallback((line: ChatLine) => setChat(old => [...old.slice(-60), line]), [])
@@ -92,18 +98,31 @@ export default function App() {
       .on('broadcast', { event: 'game' }, ({ payload }: { payload: WireMessage }) => {
         if (payload.type === 'stroke') setStrokes(old => [...old, payload.stroke])
         if (payload.type === 'clear') setStrokes([])
-        if (payload.type === 'chat') addLine(payload.line)
+        if (payload.type === 'chat') {
+          addLine(payload.line)
+          const activeGame = gameRef.current
+          const answer = secretRef.current
+          if (payload.line.kind === 'guess' && activeGame?.drawerId === playerId && answer && payload.line.text.toLowerCase() === answer.toLowerCase() && payload.line.playerId) {
+            const updated = playersRef.current.map(p => p.id === payload.line.playerId ? { ...p, score: p.score + Math.max(10, Math.ceil((activeGame.endsAt - Date.now()) / 1000)) } : p)
+            playersRef.current = updated
+            setPlayers(updated)
+            void roomChannel.send({ type: 'broadcast', event: 'game', payload: { type: 'score', players: updated } satisfies WireMessage })
+            void roomChannel.send({ type: 'broadcast', event: 'game', payload: { type: 'chat', line: { id: makeId(), name: payload.line.name, text: 'guessed the word!', kind: 'correct' } } satisfies WireMessage })
+          }
+        }
         if (payload.type === 'players') setPlayers(payload.players)
         if (payload.type === 'round') { setGame(payload.state); setTimeLeft(Math.max(0, Math.ceil((payload.state.endsAt - Date.now()) / 1000))); setStrokes([]) }
         if (payload.type === 'secret' && payload.to === playerId) setSecretWord(payload.word)
         if (payload.type === 'score') setPlayers(payload.players)
       })
       .on('presence', { event: 'sync' }, () => {
-        const state = roomChannel.presenceState<{ name: string; score: number }>()
+        const state = roomChannel.presenceState<{ name: string; score: number; online_at?: string }>()
         const online = Object.entries(state).map(([id, entries]) => ({
-          id, name: entries[0]?.name || 'Player', score: entries[0]?.score || 0
+          id, name: entries[0]?.name || 'Player', score: entries[0]?.score || 0,
+          joinedAt: entries[0]?.online_at || ''
         }))
-        setPlayers(online.sort((a, b) => a.id === playerId ? -1 : b.id === playerId ? 1 : a.name.localeCompare(b.name)))
+        online.sort((a, b) => a.joinedAt.localeCompare(b.joinedAt) || a.id.localeCompare(b.id))
+        setPlayers(online.map(({ id, name, score }) => ({ id, name, score })))
       })
       .subscribe(async status => {
         if (status === 'SUBSCRIBED') {
@@ -213,15 +232,9 @@ export default function App() {
       setGuess('')
       return
     }
-    const correct = !!secretWord && text.toLowerCase() === secretWord.toLowerCase()
-    const line: ChatLine = { id: makeId(), name, text: correct ? 'guessed the word!' : text, kind: correct ? 'correct' : 'guess' }
+    const line: ChatLine = { id: makeId(), name, text, kind: 'guess', playerId }
     addLine(line)
     send({ type: 'chat', line })
-    if (correct) {
-      const updated = players.map(p => p.id === playerId ? { ...p, score: p.score + Math.max(10, timeLeft) } : p)
-      setPlayers(updated)
-      send({ type: 'score', players: updated })
-    }
     setGuess('')
   }
   const copyInvite = async () => {
